@@ -5,6 +5,8 @@ set -eu
 declare -r workdir="${PWD}"
 declare -r toolchain_directory='/tmp/venti'
 
+declare -r environment="LD_LIBRARY_PATH=${toolchain_directory}/lib PATH=${PATH}:${toolchain_directory}/bin"
+
 declare -r revision="$(git rev-parse --short HEAD)"
 
 declare -r gmp_tarball='/tmp/gmp.tar.xz'
@@ -22,11 +24,8 @@ declare -r binutils_directory='/tmp/binutils-with-gold-2.44'
 declare -r gcc_tarball='/tmp/gcc.tar.xz'
 declare -r gcc_directory='/tmp/gcc-master'
 
-declare -r system_image='/tmp/dragonflybsd.iso'
-declare -r system_image_compressed='/tmp/dragonflybsd.iso.bz2'
-declare -r system_directory='/tmp/dragonflybsd'
-
 declare -r triplet='x86_64-unknown-dragonfly'
+declare -r sysroot_url="https://github.com/AmanoTeam/dragonfly-sysroot/releases/latest/download/${triplet}.tar.xz"
 
 declare -r optflags='-w -Os'
 declare -r linkflags='-Wl,-s'
@@ -45,11 +44,9 @@ if [ "${build_type}" == 'native' ]; then
 	is_native='1'
 fi
 
-declare CROSS_COMPILE_TRIPLET=''
 declare cross_compile_flags=''
 
 if ! (( is_native )); then
-	source "./submodules/obggcc/toolchains/${build_type}.sh"
 	cross_compile_flags+="--host=${CROSS_COMPILE_TRIPLET}"
 fi
 
@@ -86,30 +83,6 @@ if ! [ -f "${gcc_tarball}" ]; then
 	patch --directory="${gcc_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Turn-Wint-conversion-back-into-an-warning.patch"
 	patch --directory="${gcc_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Revert-GCC-change-about-turning-Wimplicit-function-d.patch"
 fi
-
-cd "$(mktemp --directory)"
-
-declare sysroot_url="https://github.com/AmanoTeam/dragonfly-sysroot/releases/latest/download/${triplet}.tar.xz"
-declare sysroot_file="${PWD}/${triplet}.tar.xz"
-declare sysroot_directory="${PWD}/${triplet}"
-
-curl \
-	--url "${sysroot_url}" \
-	--retry '30' \
-	--retry-all-errors \
-	--retry-delay '0' \
-	--retry-max-time '0' \
-	--location \
-	--silent \
-	--output "${sysroot_file}"
-
-tar \
-	--extract \
-	--file="${sysroot_file}"
-
-cp --recursive "${sysroot_directory}" "${toolchain_directory}"
-
-rm --force --recursive ./*
 
 [ -d "${gmp_directory}/build" ] || mkdir "${gmp_directory}/build"
 
@@ -183,6 +156,29 @@ rm --force --recursive ./*
 make all --jobs="${max_jobs}"
 make install
 
+cd "$(mktemp --directory)"
+
+declare sysroot_file="${PWD}/${triplet}.tar.xz"
+declare sysroot_directory="${PWD}/${triplet}"
+
+curl \
+	--url "${sysroot_url}" \
+	--retry '30' \
+	--retry-all-errors \
+	--retry-delay '0' \
+	--retry-max-time '0' \
+	--location \
+	--silent \
+	--output "${sysroot_file}"
+
+tar \
+	--extract \
+	--file="${sysroot_file}"
+
+cp --recursive "${sysroot_directory}" "${toolchain_directory}"
+
+rm --force --recursive "${PWD}"
+
 [ -d "${gcc_directory}/build" ] || mkdir "${gcc_directory}/build"
 
 cd "${gcc_directory}/build"
@@ -217,8 +213,8 @@ rm --force --recursive ./*
 	--enable-languages='c,c++' \
 	--enable-ld \
 	--enable-gold \
-	--enable-plugin \
-	--enable-libsanitizer \
+	--disable-plugin \
+	--disable-libsanitizer \
 	--disable-fixincludes \
 	--disable-libstdcxx-pch \
 	--disable-werror \
@@ -232,7 +228,13 @@ rm --force --recursive ./*
 	CXXFLAGS="${optflags}" \
 	LDFLAGS="${linkflags}"
 
-LD_LIBRARY_PATH="${toolchain_directory}/lib" PATH="${PATH}:${toolchain_directory}/bin" make \
+declare args=''
+
+if (( is_native )); then
+	args+="${environment}"
+fi
+
+env ${args} make \
 	CFLAGS_FOR_TARGET="${optflags} ${linkflags}" \
 	CXXFLAGS_FOR_TARGET="${optflags} ${linkflags}" \
 	all --jobs="${max_jobs}"
