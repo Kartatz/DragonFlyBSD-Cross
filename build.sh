@@ -3,6 +3,7 @@
 set -eu
 
 declare -r workdir="${PWD}"
+declare -r toolchain_directory='/tmp/venti'
 
 declare -r revision="$(git rev-parse --short HEAD)"
 
@@ -16,10 +17,10 @@ declare -r mpc_tarball='/tmp/mpc.tar.gz'
 declare -r mpc_directory='/tmp/mpc-1.3.1'
 
 declare -r binutils_tarball='/tmp/binutils.tar.xz'
-declare -r binutils_directory='/tmp/binutils-2.43'
+declare -r binutils_directory='/tmp/binutils-with-gold-2.44'
 
 declare -r gcc_tarball='/tmp/gcc.tar.xz'
-declare -r gcc_directory='/tmp/gcc-14.2.0'
+declare -r gcc_directory='/tmp/gcc-master'
 
 declare -r system_image='/tmp/dragonflybsd.iso'
 declare -r system_image_compressed='/tmp/dragonflybsd.iso.bz2'
@@ -27,7 +28,7 @@ declare -r system_directory='/tmp/dragonflybsd'
 
 declare -r triplet='x86_64-unknown-dragonfly'
 
-declare -r optflags='-Os'
+declare -r optflags='-w -Os'
 declare -r linkflags='-Wl,-s'
 
 declare -r max_jobs="$(($(nproc) * 17))"
@@ -44,9 +45,7 @@ if [ "${build_type}" == 'native' ]; then
 	is_native='1'
 fi
 
-declare OBGGCC_TOOLCHAIN='/tmp/obggcc-toolchain'
 declare CROSS_COMPILE_TRIPLET=''
-
 declare cross_compile_flags=''
 
 if ! (( is_native )); then
@@ -70,46 +69,47 @@ if ! [ -f "${mpc_tarball}" ]; then
 fi
 
 if ! [ -f "${binutils_tarball}" ]; then
-	wget --no-verbose 'https://ftp.gnu.org/gnu/binutils/binutils-2.43.tar.xz' --output-document="${binutils_tarball}"
+	wget --no-verbose 'https://ftp.gnu.org/gnu/binutils/binutils-with-gold-2.44.tar.xz' --output-document="${binutils_tarball}"
 	tar --directory="$(dirname "${binutils_directory}")" --extract --file="${binutils_tarball}"
 	
-	patch --directory="${binutils_directory}" --strip='1' --input="${workdir}/patches/0001-Revert-gold-Use-char16_t-char32_t-instead-of-uint16_.patch"
+	patch --directory="${binutils_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Revert-gold-Use-char16_t-char32_t-instead-of-uint16_.patch"
+	patch --directory="${binutils_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Disable-annoying-linker-warnings.patch"
 fi
 
 if ! [ -f "${gcc_tarball}" ]; then
-	wget --no-verbose 'https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/gcc-14.2.0.tar.xz' --output-document="${gcc_tarball}"
+	wget --no-verbose 'https://github.com/gcc-mirror/gcc/archive/refs/heads/master.tar.gz' --output-document="${gcc_tarball}"
 	tar --directory="$(dirname "${gcc_directory}")" --extract --file="${gcc_tarball}"
 	
-	patch --directory="${gcc_directory}" --strip='1' --input="${workdir}/patches/0001-Revert-GCC-change-about-turning-Wimplicit-function-d.patch"
+	patch --directory="${gcc_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Fix-libgcc-build-on-arm.patch"
+	patch --directory="${gcc_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Change-the-default-language-version-for-C-compilatio.patch"
+	patch --directory="${gcc_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Turn-Wimplicit-int-back-into-an-warning.patch"
+	patch --directory="${gcc_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Turn-Wint-conversion-back-into-an-warning.patch"
+	patch --directory="${gcc_directory}" --strip='1' --input="${workdir}/submodules/obggcc/patches/0001-Revert-GCC-change-about-turning-Wimplicit-function-d.patch"
 fi
 
-declare -r toolchain_directory="/tmp/venti"
+cd "$(mktemp --directory)"
 
-wget --no-verbose 'https://mirror-master.dragonflybsd.org/iso-images/dfly-x86_64-5.0.0_REL.iso.bz2' --output-document="${system_image_compressed}"
+declare sysroot_url="https://github.com/AmanoTeam/dragonfly-sysroot/releases/latest/download/${triplet}.tar.xz"
+declare sysroot_file="${PWD}/${triplet}.tar.xz"
+declare sysroot_directory="${PWD}/${triplet}"
 
-pushd "$(dirname "${system_image_compressed}")"
+curl \
+	--url "${sysroot_url}" \
+	--retry '30' \
+	--retry-all-errors \
+	--retry-delay '0' \
+	--retry-max-time '0' \
+	--location \
+	--silent \
+	--output "${sysroot_file}"
 
-bzip2 --decompress "${system_image_compressed}"
+tar \
+	--extract \
+	--file="${sysroot_file}"
 
-pushd
+cp --recursive "${sysroot_directory}" "${toolchain_directory}"
 
-[ -d "${system_directory}" ] || mkdir "${system_directory}"
-
-sudo mount -o loop "${system_image}" "${system_directory}"
-
-[ -d "${toolchain_directory}/${triplet}" ] || mkdir --parent "${toolchain_directory}/${triplet}"
-
-cp --recursive "${system_directory}/lib" "${toolchain_directory}/${triplet}"
-cp --recursive "${system_directory}/usr/lib" "${toolchain_directory}/${triplet}"
-cp --recursive "${system_directory}/usr/include" "${toolchain_directory}/${triplet}"
-
-sudo umount "${system_directory}"
-
-pushd "${toolchain_directory}/${triplet}/lib"
-
-find . -type l | xargs ls -l | grep '/lib/' | awk '{print "unlink "$9" && ln -s $(basename "$11") $(basename "$9")"}'  | bash
-
-pushd
+rm --force --recursive ./*
 
 [ -d "${gmp_directory}/build" ] || mkdir "${gmp_directory}/build"
 
@@ -196,7 +196,7 @@ rm --force --recursive ./*
 	--with-mpfr="${toolchain_directory}" \
 	--with-bugurl='https://github.com/AmanoTeam/Venti/issues' \
 	--with-gcc-major-version-only \
-	--with-pkgversion="Venti v0.5-${revision}" \
+	--with-pkgversion="Venti v0.6-${revision}" \
 	--with-sysroot="${toolchain_directory}/${triplet}" \
 	--with-native-system-header-dir='/include' \
 	--includedir="${toolchain_directory}/${triplet}/include" \
@@ -217,6 +217,9 @@ rm --force --recursive ./*
 	--enable-languages='c,c++' \
 	--enable-ld \
 	--enable-gold \
+	--enable-plugin \
+	--enable-libsanitizer \
+	--disable-fixincludes \
 	--disable-libstdcxx-pch \
 	--disable-werror \
 	--disable-libgomp \
@@ -227,7 +230,7 @@ rm --force --recursive ./*
 	${cross_compile_flags} \
 	CFLAGS="${optflags}" \
 	CXXFLAGS="${optflags}" \
-	LDFLAGS="-Wl,-rpath-link,${OBGGCC_TOOLCHAIN}/${CROSS_COMPILE_TRIPLET}/lib ${linkflags}"
+	LDFLAGS="${linkflags}"
 
 LD_LIBRARY_PATH="${toolchain_directory}/lib" PATH="${PATH}:${toolchain_directory}/bin" make \
 	CFLAGS_FOR_TARGET="${optflags} ${linkflags}" \
@@ -236,14 +239,6 @@ LD_LIBRARY_PATH="${toolchain_directory}/lib" PATH="${PATH}:${toolchain_directory
 make install
 
 cd "${toolchain_directory}/${triplet}/bin"
-
-for name in *; do
-	rm "${name}"
-	ln -s "../../bin/${triplet}-${name}" "${name}"
-done
-
-rm --recursive "${toolchain_directory}/share"
-rm --recursive "${toolchain_directory}/lib/gcc/${triplet}/"*"/include-fixed"
 
 patchelf --add-rpath '$ORIGIN/../../../../lib' "${toolchain_directory}/libexec/gcc/${triplet}/"*"/cc1"
 patchelf --add-rpath '$ORIGIN/../../../../lib' "${toolchain_directory}/libexec/gcc/${triplet}/"*"/cc1plus"
